@@ -11,7 +11,7 @@ import collections
 
 
 class Logger:
-    def __init__(self, log_dir, checkpoint_freq=100, visualizer_params=None, zfill_num=8, log_file_name='log.txt'):
+    def __init__(self, log_dir, checkpoint_freq=100, visualizer_params=None, zfill_num=8, log_file_name='log.txt', num_source=1):
 
         self.loss_list = []
         self.cpk_dir = log_dir
@@ -20,11 +20,12 @@ class Logger:
             os.makedirs(self.visualizations_dir)
         self.log_file = open(os.path.join(log_dir, log_file_name), 'a')
         self.zfill_num = zfill_num
-        self.visualizer = Visualizer(**visualizer_params)
+        self.visualizer = Visualizer(**visualizer_params, num_source=num_source)
         self.checkpoint_freq = checkpoint_freq
         self.epoch = 0
         self.best_loss = float('inf')
         self.names = None
+        self.num_source = num_source
 
     def log_scores(self, loss_names):
         loss_mean = np.array(self.loss_list).mean(axis=0)
@@ -91,19 +92,20 @@ class Logger:
         self.loss_list.append(list(losses.values()))
 
     def log_epoch(self, epoch, models, inp, out):
+        self.visualize_rec(inp, out)
         self.epoch = epoch
         self.models = models
         if (self.epoch + 1) % self.checkpoint_freq == 0:
             self.save_cpk()
         self.log_scores(self.names)
-        self.visualize_rec(inp, out)
 
 
 class Visualizer:
-    def __init__(self, kp_size=5, draw_border=False, colormap='gist_rainbow'):
+    def __init__(self, kp_size=5, draw_border=False, colormap='gist_rainbow', num_source=1):
         self.kp_size = kp_size
         self.draw_border = draw_border
         self.colormap = plt.get_cmap(colormap)
+        self.num_source = num_source
 
     def draw_image_with_kp(self, image, kp_array):
         image = np.copy(image)
@@ -139,10 +141,17 @@ class Visualizer:
         images = []
 
         # Source image with keypoints
-        source = source.data.cpu()
-        kp_source = out['kp_source']['value'][:, :, :2].data.cpu().numpy()     # 3d -> 2d
-        source = np.transpose(source, [0, 2, 3, 1])
-        images.append((source, kp_source))
+        if self.num_source == 1:
+            source = source.data.cpu()
+            kp_source = out['kp_source']['value'][:, :, :2].data.cpu().numpy()     # 3d -> 2d
+            source = np.transpose(source, [0, 2, 3, 1])
+            images.append((source, kp_source))
+        else:
+            for i in range(self.num_source):
+                kp_source = out['kp_source'][i]['value'][:, :, :2].data.cpu().numpy()     # 3d -> 2d
+                each_source = np.transpose(source[:,i], [0, 2, 3, 1])
+                images.append((each_source, kp_source))
+            source = np.transpose(source[:,0], [0, 2, 3, 1]) # only for changing the shape
 
         # Equivariance visualization
         if 'transformed_frame' in out:

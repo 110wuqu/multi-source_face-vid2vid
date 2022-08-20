@@ -12,8 +12,19 @@ from sync_batchnorm import DataParallelWithCallback
 
 from frames_dataset import DatasetRepeater
 
+from torchvision import transforms
+from time import time
+from modules.model import headpose_pred_to_degree
+import numpy as np
+from time import time
 
-def train(config, generator, discriminator, kp_detector, he_estimator, checkpoint, log_dir, dataset, device_ids):
+from torch.utils.tensorboard import SummaryWriter
+
+# from select_source import select_source
+
+def train(config, generator, discriminator, kp_detector, he_estimator, checkpoint, log_dir, tb_dir, dataset, device_ids, hopenet):
+    tb_writer = SummaryWriter(log_dir=tb_dir)
+
     train_params = config['train_params']
 
     optimizer_generator = torch.optim.Adam(generator.parameters(), lr=train_params['lr_generator'], betas=(0.5, 0.999))
@@ -40,16 +51,21 @@ def train(config, generator, discriminator, kp_detector, he_estimator, checkpoin
         dataset = DatasetRepeater(dataset, train_params['num_repeats'])
     dataloader = DataLoader(dataset, batch_size=train_params['batch_size'], shuffle=True, num_workers=16, drop_last=True)
 
-    generator_full = GeneratorFullModel(kp_detector, he_estimator, generator, discriminator, train_params, estimate_jacobian=config['model_params']['common_params']['estimate_jacobian'])
+    generator_full = GeneratorFullModel(kp_detector, he_estimator, generator, discriminator, train_params, estimate_jacobian=config['model_params']['common_params']['estimate_jacobian'], hopenet=hopenet, num_source=config['model_params']['common_params']['num_source'])
     discriminator_full = DiscriminatorFullModel(kp_detector, generator, discriminator, train_params)
 
     if torch.cuda.is_available():
         generator_full = DataParallelWithCallback(generator_full, device_ids=device_ids)
         discriminator_full = DataParallelWithCallback(discriminator_full, device_ids=device_ids)
 
-    with Logger(log_dir=log_dir, visualizer_params=config['visualizer_params'], checkpoint_freq=train_params['checkpoint_freq']) as logger:
+    with Logger(log_dir=log_dir, visualizer_params=config['visualizer_params'], checkpoint_freq=train_params['checkpoint_freq'], num_source=config['model_params']['common_params']['num_source']) as logger:
         for epoch in trange(start_epoch, train_params['num_epochs']):
+            # start = time()
+            batch_idx = 0
             for x in dataloader:
+                # print(time() - start)
+                # start = time()
+                
                 losses_generator, generated = generator_full(x)
 
                 loss_values = [val.mean() for val in losses_generator.values()]
@@ -79,6 +95,15 @@ def train(config, generator, discriminator, kp_detector, he_estimator, checkpoin
                 losses = {key: value.mean().detach().data.cpu().numpy() for key, value in losses_generator.items()}
                 logger.log_iter(losses=losses)
 
+                for i in range(len(logger.names)):
+                    tb_writer.add_scalar("iter_"+logger.names[i], np.array(logger.loss_list)[-1][i], epoch * len(dataloader) + batch_idx)
+                batch_idx += 1
+
+
+            avg_losses = np.array(logger.loss_list).mean(0)
+            for i in range(len(logger.names)):
+                tb_writer.add_scalar(logger.names[i], avg_losses[i], epoch)
+            
             scheduler_generator.step()
             scheduler_discriminator.step()
             scheduler_kp_detector.step()
@@ -92,3 +117,16 @@ def train(config, generator, discriminator, kp_detector, he_estimator, checkpoin
                                      'optimizer_discriminator': optimizer_discriminator,
                                      'optimizer_kp_detector': optimizer_kp_detector,
                                      'optimizer_he_estimator': optimizer_he_estimator}, inp=x, out=generated)
+    print(f'finish to train (tb_dir: {tb_dir})')
+    print(f'zero frames: {dataset.dataset.zero_frame}')
+
+def get_head_pose(hopenet, source):
+    transform_hopenet =  transforms.Compose([transforms.Resize(size=(224, 224)),
+                                            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+    source_224 = transform_hopenet(source)
+    yaw, pitch, roll = hopenet(source_224)
+    yaw = headpose_pred_to_degree(yaw)
+    pitch = headpose_pred_to_degree(pitch)
+    roll = headpose_pred_to_degree(roll)
+    return np.array([yaw.cpu().detach().numpy(), pitch.cpu().detach().numpy(), roll.cpu().detach().numpy()])
+

@@ -10,12 +10,13 @@ class OcclusionAwareGenerator(nn.Module):
     Generator follows NVIDIA architecture.
     """
 
-    def __init__(self, image_channel, feature_channel, num_kp, block_expansion, max_features, num_down_blocks, reshape_channel, reshape_depth,
-                 num_resblocks, estimate_occlusion_map=False, dense_motion_params=None, estimate_jacobian=False):
+    def __init__(self, image_channel, feature_channel, num_kp, num_source, block_expansion, max_features, num_down_blocks, reshape_channel, reshape_depth, num_resblocks, estimate_occlusion_map=False, dense_motion_params=None, estimate_jacobian=False):
         super(OcclusionAwareGenerator, self).__init__()
-
+        
+        self.num_source = num_source
+        
         if dense_motion_params is not None:
-            self.dense_motion_network = DenseMotionNetwork(num_kp=num_kp, feature_channel=feature_channel,
+            self.dense_motion_network = DenseMotionNetwork(num_kp=num_kp, feature_channel=feature_channel, num_source=num_source,
                                                            estimate_occlusion_map=estimate_occlusion_map,
                                                            **dense_motion_params)
         else:
@@ -40,7 +41,8 @@ class OcclusionAwareGenerator(nn.Module):
             self.resblocks_3d.add_module('3dr' + str(i), ResBlock3d(reshape_channel, kernel_size=3, padding=1))
 
         out_features = block_expansion * (2 ** (num_down_blocks))
-        self.third = SameBlock2d(max_features, out_features, kernel_size=(3, 3), padding=(1, 1), lrelu=True)
+        self.third = SameBlock2d(max_features*num_source, out_features, kernel_size=(3, 3), padding=(1, 1), lrelu=True)
+        # self.third = SameBlock2d(max_features, out_features, kernel_size=(3, 3), padding=(1, 1), lrelu=True)
         self.fourth = nn.Conv2d(in_channels=out_features, out_channels=out_features, kernel_size=1, stride=1)
 
         self.resblocks_2d = torch.nn.Sequential()
@@ -69,6 +71,10 @@ class OcclusionAwareGenerator(nn.Module):
 
     def forward(self, source_image, kp_driving, kp_source):
         # Encoding (downsampling) part
+        if self.num_source != 1:
+            bs_org, _, c, h, w = source_image.shape
+            source_image = source_image.view(-1, c, h, w) # (bs * num_source, c, h, w)
+
         out = self.first(source_image)
         for i in range(len(self.down_blocks)):
             out = self.down_blocks[i](out)
@@ -76,7 +82,8 @@ class OcclusionAwareGenerator(nn.Module):
         bs, c, h, w = out.shape
         # print(out.shape)
         feature_3d = out.view(bs, self.reshape_channel, self.reshape_depth, h ,w) 
-        feature_3d = self.resblocks_3d(feature_3d)
+        feature_3d = self.resblocks_3d(feature_3d) # (bs, c, d, h, w) or (bs * num_source, c, d, h, w)
+        _, c, d, h, w = feature_3d.shape
 
         # Transforming feature representation according to deformation and occlusion
         output_dict = {}
@@ -90,9 +97,12 @@ class OcclusionAwareGenerator(nn.Module):
                 output_dict['occlusion_map'] = occlusion_map
             else:
                 occlusion_map = None
-            deformation = dense_motion['deformation']
-            out = self.deform_input(feature_3d, deformation)
-
+            deformation = dense_motion['deformation'] # (bs, d, h, w, 3)
+            if self.num_source != 1:
+                feature_3d = feature_3d.view(bs_org, -1, d, h, w)
+            
+            out = self.deform_input(feature_3d, deformation) # (bs, c, d, h, w)
+            
             bs, c, d, h, w = out.shape
             out = out.view(bs, c*d, h, w)
             out = self.third(out)

@@ -11,7 +11,7 @@ class KPDetector(nn.Module):
     Detecting canonical keypoints. Return keypoint position and jacobian near each keypoint.
     """
 
-    def __init__(self, block_expansion, feature_channel, num_kp, image_channel, max_features, reshape_channel, reshape_depth,
+    def __init__(self, block_expansion, feature_channel, num_kp, num_source, image_channel, max_features, reshape_channel, reshape_depth,
                  num_blocks, temperature, estimate_jacobian=False, scale_factor=1, single_jacobian_map=False):
         super(KPDetector, self).__init__()
 
@@ -87,7 +87,7 @@ class HEEstimator(nn.Module):
     Estimating head pose and expression.
     """
 
-    def __init__(self, block_expansion, feature_channel, num_kp, image_channel, max_features, num_bins=66, estimate_jacobian=True):
+    def __init__(self, block_expansion, feature_channel, num_kp, num_source, image_channel, max_features, num_bins=66, estimate_jacobian=True):
         super(HEEstimator, self).__init__()
 
         self.conv1 = nn.Conv2d(in_channels=image_channel, out_channels=block_expansion, kernel_size=7, padding=3, stride=2)

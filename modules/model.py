@@ -229,7 +229,7 @@ class GeneratorFullModel(torch.nn.Module):
     Merge all generator related updates into single model for better multi-gpu usage
     """
 
-    def __init__(self, kp_extractor, he_estimator, generator, discriminator, train_params, estimate_jacobian=True):
+    def __init__(self, kp_extractor, he_estimator, generator, discriminator, train_params, estimate_jacobian=True, hopenet=None, num_source=1):
         super(GeneratorFullModel, self).__init__()
         self.kp_extractor = kp_extractor
         self.he_estimator = he_estimator
@@ -251,25 +251,25 @@ class GeneratorFullModel(torch.nn.Module):
             if torch.cuda.is_available():
                 self.vgg = self.vgg.cuda()
 
-        if self.loss_weights['headpose'] != 0:
-            self.hopenet = hopenet.Hopenet(models.resnet.Bottleneck, [3, 4, 6, 3], 66)
-            print('Loading hopenet')
-            hopenet_state_dict = torch.load(train_params['hopenet_snapshot'])
-            self.hopenet.load_state_dict(hopenet_state_dict)
-            if torch.cuda.is_available():
-                self.hopenet = self.hopenet.cuda()
-                self.hopenet.eval()
+        if hopenet is not None:
+            self.hopenet = hopenet
 
+        self.num_source = num_source
 
     def forward(self, x):
-        kp_canonical = self.kp_extractor(x['source'])     # {'value': value, 'jacobian': jacobian}   
+        if self.num_source == 1:
+            kp_canonical = self.kp_extractor(x['source'])     # {'value': value, 'jacobian': jacobian}   
+            he_source = self.he_estimator(x['source'])        # {'yaw': yaw, 'pitch': pitch, 'roll': roll, 't': t, 'exp': exp}
+            kp_source = keypoint_transformation(kp_canonical, he_source, self.estimate_jacobian)
+        else:
+            kp_canonical = self.kp_extractor(x['source'][:,0])   
+            he_source, kp_source = [], []
+            for i in range(self.num_source):
+                he_source.append(self.he_estimator(x['source'][:,i]))
+                kp_source.append(keypoint_transformation(kp_canonical, he_source[i], self.estimate_jacobian))
 
-        he_source = self.he_estimator(x['source'])        # {'yaw': yaw, 'pitch': pitch, 'roll': roll, 't': t, 'exp': exp}
         he_driving = self.he_estimator(x['driving'])      # {'yaw': yaw, 'pitch': pitch, 'roll': roll, 't': t, 'exp': exp}
-
-        # {'value': value, 'jacobian': jacobian}
-        kp_source = keypoint_transformation(kp_canonical, he_source, self.estimate_jacobian)
-        kp_driving = keypoint_transformation(kp_canonical, he_driving, self.estimate_jacobian)
+        kp_driving = keypoint_transformation(kp_canonical, he_driving, self.estimate_jacobian) # {'value': value, 'jacobian': jacobian}
 
         generated = self.generator(x['source'], kp_source=kp_source, kp_driving=kp_driving)
         generated.update({'kp_source': kp_source, 'kp_driving': kp_driving})
@@ -327,7 +327,7 @@ class GeneratorFullModel(torch.nn.Module):
 
             generated['transformed_frame'] = transformed_frame
             generated['transformed_kp'] = transformed_kp
-
+ 
             ## Value loss part
             if self.loss_weights['equivariance_value'] != 0:
                 # project 3d -> 2d
