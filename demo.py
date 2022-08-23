@@ -12,6 +12,7 @@ from skimage import img_as_ubyte
 import torch
 import torch.nn.functional as F
 from sync_batchnorm import DataParallelWithCallback
+import shutil
 
 from modules.generator import OcclusionAwareGenerator, OcclusionAwareSPADEGenerator
 from modules.keypoint_detector import KPDetector, HEEstimator
@@ -25,7 +26,7 @@ if sys.version_info[0] < 3:
 def load_checkpoints(config_path, checkpoint_path, gen, cpu=False):
 
     with open(config_path) as f:
-        config = yaml.load(f)
+        config = yaml.load(f, Loader=yaml.FullLoader)
 
     if gen == 'original':
         generator = OcclusionAwareGenerator(**config['model_params']['generator_params'],
@@ -186,15 +187,32 @@ def keypoint_transformation(kp_canonical, he, estimate_jacobian=True, free_view=
 def make_animation(source_image, driving_video, generator, kp_detector, he_estimator, relative=True, adapt_movement_scale=True, estimate_jacobian=True, cpu=False, free_view=False, yaw=0, pitch=0, roll=0):
     with torch.no_grad():
         predictions = []
-        source = torch.tensor(source_image[np.newaxis].astype(np.float32)).permute(0, 3, 1, 2)
+        if 'list' in str(type(source_image)):
+            source = []
+            for image in source_image:
+                source.append(torch.tensor(image[np.newaxis].astype(np.float32)).permute(0, 3, 1, 2))
+            source = torch.cat(source, dim=0)[np.newaxis]
+            print(source.shape)
+        else:
+            source = torch.tensor(source_image[np.newaxis].astype(np.float32)).permute(0, 3, 1, 2)
+            
         if not cpu:
             source = source.cuda()
         driving = torch.tensor(np.array(driving_video)[np.newaxis].astype(np.float32)).permute(0, 4, 1, 2, 3)
-        kp_canonical = kp_detector(source)
-        he_source = he_estimator(source)
-        he_driving_initial = he_estimator(driving[:, :, 0])
 
-        kp_source = keypoint_transformation(kp_canonical, he_source, estimate_jacobian)
+        if 'list' in str(type(source_image)):
+            kp_canonical = kp_detector(source[:,0])   
+            he_source, kp_source = [], []
+            for i in range(len(source_image)):
+                he_source.append(he_estimator(source[:,i]))
+                kp_source.append(keypoint_transformation(kp_canonical, he_source[i], estimate_jacobian))
+            
+        else:
+            kp_canonical = kp_detector(source)
+            he_source = he_estimator(source)
+            kp_source = keypoint_transformation(kp_canonical, he_source, estimate_jacobian)
+
+        he_driving_initial = he_estimator(driving[:, :, 0])
         kp_driving_initial = keypoint_transformation(kp_canonical, he_driving_initial, estimate_jacobian)
         # kp_driving_initial = keypoint_transformation(kp_canonical, he_driving_initial, free_view=free_view, yaw=yaw, pitch=pitch, roll=roll)
 
@@ -204,9 +222,14 @@ def make_animation(source_image, driving_video, generator, kp_detector, he_estim
                 driving_frame = driving_frame.cuda()
             he_driving = he_estimator(driving_frame)
             kp_driving = keypoint_transformation(kp_canonical, he_driving, estimate_jacobian, free_view=free_view, yaw=yaw, pitch=pitch, roll=roll)
-            kp_norm = normalize_kp(kp_source=kp_source, kp_driving=kp_driving,
-                                   kp_driving_initial=kp_driving_initial, use_relative_movement=relative,
-                                   use_relative_jacobian=estimate_jacobian, adapt_movement_scale=adapt_movement_scale)
+            if 'list' in str(type(source_image)):
+                kp_norm = normalize_kp(kp_source=kp_source[0], kp_driving=kp_driving,
+                                        kp_driving_initial=kp_driving_initial, use_relative_movement=relative,
+                                        use_relative_jacobian=estimate_jacobian, adapt_movement_scale=adapt_movement_scale)
+            else:
+                kp_norm = normalize_kp(kp_source=kp_source, kp_driving=kp_driving,
+                                    kp_driving_initial=kp_driving_initial, use_relative_movement=relative,
+                                    use_relative_jacobian=estimate_jacobian, adapt_movement_scale=adapt_movement_scale)
             out = generator(source, kp_source=kp_source, kp_driving=kp_norm)
 
             predictions.append(np.transpose(out['prediction'].data.cpu().numpy(), [0, 2, 3, 1])[0])
@@ -246,7 +269,7 @@ if __name__ == "__main__":
     parser.add_argument("--driving_video", default='', help="path to driving video")
     parser.add_argument("--result_video", default='', help="path to output")
 
-    parser.add_argument("--gen", default="spade", choices=["original", "spade"])
+    parser.add_argument("--gen", default="original", choices=["original", "spade"])
  
     parser.add_argument("--relative", dest="relative", action="store_true", help="use relative or absolute keypoint coordinates")
     parser.add_argument("--adapt_scale", dest="adapt_scale", action="store_true", help="adapt movement scale based on convex hull of keypoints")
@@ -271,25 +294,51 @@ if __name__ == "__main__":
 
     opt = parser.parse_args()
 
-    source_image = imageio.imread(opt.source_image)
-    reader = imageio.get_reader(opt.driving_video)
-    fps = reader.get_meta_data()['fps']
+    with open(opt.config) as f:
+        config = yaml.load(f, Loader=yaml.FullLoader)
+    estimate_jacobian = config['model_params']['common_params']['estimate_jacobian']
+    print(f'estimate jacobian: {estimate_jacobian}')
+
+    num_source = config['model_params']['common_params']['num_source']
+    
+    if num_source == 1:
+        source_image = imageio.imread(opt.source_image)
+    else:
+        source_image = []
+        sources = opt.source_image.split(',')
+        for source in sources:
+            source_image.append(imageio.imread(source))
+        print(f'source: {sources}')
+
+    try:
+        reader = imageio.get_reader(opt.driving_video)
+        fps = reader.get_meta_data()['fps']
+    except:
+        reader = []
+        frame_list = os.listdir(opt.driving_video)
+        for frame in frame_list:
+            reader.append(imageio.imread(os.path.join(opt.driving_video, frame)))
+        fps = 5
+    
     driving_video = []
     try:
         for im in reader:
             driving_video.append(im)
     except RuntimeError:
         pass
-    reader.close()
 
-    source_image = resize(source_image, (256, 256))[..., :3]
+    try:
+        reader.close()
+    except:
+        pass
+
+    if num_source == 1:
+        source_image = resize(source_image, (256, 256))[..., :3]
+    else:
+        for i in range(len(source_image)):
+            source_image[i] = resize(source_image[i], (256, 256))[..., :3]
     driving_video = [resize(frame, (256, 256))[..., :3] for frame in driving_video]
     generator, kp_detector, he_estimator = load_checkpoints(config_path=opt.config, checkpoint_path=opt.checkpoint, gen=opt.gen, cpu=opt.cpu)
-
-    with open(opt.config) as f:
-        config = yaml.load(f)
-    estimate_jacobian = config['model_params']['common_params']['estimate_jacobian']
-    print(f'estimate jacobian: {estimate_jacobian}')
 
     if opt.find_best_frame or opt.best_frame is not None:
         i = opt.best_frame if opt.best_frame is not None else find_best_frame(source_image, driving_video, cpu=opt.cpu)
@@ -301,4 +350,19 @@ if __name__ == "__main__":
         predictions = predictions_backward[::-1] + predictions_forward[1:]
     else:
         predictions = make_animation(source_image, driving_video, generator, kp_detector, he_estimator, relative=opt.relative, adapt_movement_scale=opt.adapt_scale, estimate_jacobian=estimate_jacobian, cpu=opt.cpu, free_view=opt.free_view, yaw=opt.yaw, pitch=opt.pitch, roll=opt.roll)
-    imageio.mimsave(opt.result_video, [img_as_ubyte(frame) for frame in predictions], fps=fps)
+        
+    # if not os.path.exists(opt.result_video):
+    #     os.mkdir(opt.result_video)
+    # if not os.path.exists(os.path.join(opt.result_video, 'driving')):
+    #     os.mkdir(os.path.join(opt.result_video, 'driving'))
+    # if not os.path.exists(os.path.join(opt.result_video, 'generated')):
+    #     os.mkdir(os.path.join(opt.result_video, 'generated'))
+    
+    # for frame_idx in range(len(predictions)):
+    #     shutil.copy(os.path.join(opt.driving_video, frame_list[frame_idx]), 
+    #                 os.path.join(opt.result_video, 'driving', frame_list[frame_idx].split('/')[-1]))
+    #     imageio.imwrite(os.path.join(opt.result_video, 'generated', frame_list[frame_idx].split('/')[-1]), 
+    #                     img_as_ubyte(predictions[frame_idx]))
+    
+    imageio.mimsave(opt.result_video+"_driving.mp4", [img_as_ubyte(frame) for frame in driving_video], fps=fps)
+    imageio.mimsave(opt.result_video+"_generated.mp4", [img_as_ubyte(frame) for frame in predictions], fps=fps)
