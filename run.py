@@ -51,7 +51,6 @@ if __name__ == "__main__":
             log_dir += '_' + strftime("%d_%m_%y_%H.%M.%S", gmtime())
         else:
             log_dir = os.path.join(opt.log_dir, opt.save)
-            log_dir += '_' + os.path.basename(opt.config).split('.')[0].split('-')[-1]
             log_dir += '_' + strftime("%d_%m_%y_%H.%M.%S", gmtime())
     print(f'log_dir: {log_dir}')
 
@@ -60,7 +59,6 @@ if __name__ == "__main__":
         tb_dir += '_' + strftime("%d_%m_%y_%H.%M.%S", gmtime())
     else:
         tb_dir = os.path.join(opt.tb_dir, opt.save)
-        tb_dir += '_' + os.path.basename(opt.config).split('.')[0].split('-')[-1]
         tb_dir += '_' + strftime("%d_%m_%y_%H.%M.%S", gmtime())
     print(f'tb_dir: {tb_dir}')
     

@@ -337,6 +337,7 @@ if __name__ == "__main__":
     else:
         for i in range(len(source_image)):
             source_image[i] = resize(source_image[i], (256, 256))[..., :3]
+            print(source_image[i].shape)
     driving_video = [resize(frame, (256, 256))[..., :3] for frame in driving_video]
     generator, kp_detector, he_estimator = load_checkpoints(config_path=opt.config, checkpoint_path=opt.checkpoint, gen=opt.gen, cpu=opt.cpu)
 
