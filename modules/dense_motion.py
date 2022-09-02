@@ -12,16 +12,16 @@ class DenseMotionNetwork(nn.Module):
     Module that predicting a dense motion from sparse motion representation given by kp_source and kp_driving
     """
 
-    def __init__(self, block_expansion, num_blocks, max_features, num_kp, feature_channel, reshape_depth, compress, num_source,
+    def __init__(self, block_expansion, num_blocks, max_features, num_kp, feature_channel, reshape_depth, compress, num_source, train=True,
                  estimate_occlusion_map=False):
         super(DenseMotionNetwork, self).__init__()
         
-        self.hourglass = Hourglass(block_expansion=block_expansion, in_features=(num_kp+1)*(compress+1), max_features=max_features, num_blocks=num_blocks)
-        # self.hourglass = Hourglass(block_expansion=block_expansion, in_features=(num_kp*num_source+1)*(compress+1), max_features=max_features, num_blocks=num_blocks)
+        # self.hourglass = Hourglass(block_expansion=block_expansion, in_features=(num_kp+1)*(compress+1), max_features=max_features, num_blocks=num_blocks)
+        self.hourglass = Hourglass(block_expansion=block_expansion, in_features=(num_kp*num_source+1)*(compress+1), max_features=max_features, num_blocks=num_blocks)
         
 
-        self.mask = nn.Conv3d(self.hourglass.out_filters, num_kp + 1, kernel_size=7, padding=3)
-        # self.mask = nn.Conv3d(self.hourglass.out_filters, num_kp*num_source + 1, kernel_size=7, padding=3)
+        # self.mask = nn.Conv3d(self.hourglass.out_filters, num_kp + 1, kernel_size=7, padding=3)
+        self.mask = nn.Conv3d(self.hourglass.out_filters, num_kp*num_source + 1, kernel_size=7, padding=3)
 
         self.compress = nn.Conv3d(feature_channel, compress, kernel_size=1)
         self.norm = BatchNorm3d(compress, affine=True)
@@ -34,6 +34,7 @@ class DenseMotionNetwork(nn.Module):
 
         self.num_kp = num_kp
         self.num_source = num_source
+        self.is_train = train
 
 
     def create_sparse_motions(self, feature, kp_driving, kp_source):
@@ -72,19 +73,26 @@ class DenseMotionNetwork(nn.Module):
         if self.num_source == 1:
             driving_to_source = coordinate_grid + kp_source['value'].view(bs, self.num_kp, 1, 1, 1, 3)    # (bs, num_kp, d, h, w, 3)
         else:
+            # randomly dropout keypoint's frame
+            rand_idx = []
+            for i in range(self.num_kp):
+                rand_idx.append(randint(0,1))
+
             driving_to_source = []
             for i in range(self.num_source):
                 driving_to_source.append(coordinate_grid + kp_source[i]['value'].view(bs, self.num_kp, 1, 1, 1, 3))
 
-            # driving_to_source = torch.cat(driving_to_source, dim=1)
-
-            # randomly dropout keypoint's frame
-            selecting_keypoint = []
-            rand_idx = []
-            for i in range(self.num_kp):
-                rand_idx.append(randint(0,1))
-                selecting_keypoint.append(driving_to_source[rand_idx[-1]][:,i].unsqueeze(1))
-            driving_to_source = torch.cat(selecting_keypoint, dim=1)
+            if self.is_train:
+                selecting_keypoint = []
+                for i in range(self.num_source):
+                    for j in range(self.num_kp):
+                        if rand_idx[j]==i:
+                            selecting_keypoint.append(driving_to_source[i][:,j].unsqueeze(1))
+                        else:
+                            selecting_keypoint.append(torch.zeros(driving_to_source[i][:,j].unsqueeze(1).shape, device='cuda'))
+                driving_to_source = torch.cat(selecting_keypoint, dim=1)
+            else:
+                driving_to_source = torch.cat(driving_to_source, dim=1)
 
         #adding background feature
         sparse_motions = torch.cat([identity_grid, driving_to_source], dim=1)
