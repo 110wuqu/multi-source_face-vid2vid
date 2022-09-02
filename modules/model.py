@@ -256,7 +256,7 @@ class GeneratorFullModel(torch.nn.Module):
 
         self.num_source = num_source
 
-    def forward(self, x):
+    def forward(self, x, epoch_rate=None):
         if self.num_source == 1:
             kp_canonical = self.kp_extractor(x['source'])     # {'value': value, 'jacobian': jacobian}   
             he_source = self.he_estimator(x['source'])        # {'yaw': yaw, 'pitch': pitch, 'roll': roll, 't': t, 'exp': exp}
@@ -271,7 +271,7 @@ class GeneratorFullModel(torch.nn.Module):
         he_driving = self.he_estimator(x['driving'])      # {'yaw': yaw, 'pitch': pitch, 'roll': roll, 't': t, 'exp': exp}
         kp_driving = keypoint_transformation(kp_canonical, he_driving, self.estimate_jacobian) # {'value': value, 'jacobian': jacobian}
 
-        generated = self.generator(x['source'], kp_source=kp_source, kp_driving=kp_driving)
+        generated = self.generator(x['source'], kp_source=kp_source, kp_driving=kp_driving, epoch_rate=epoch_rate)
         generated.update({'kp_source': kp_source, 'kp_driving': kp_driving})
 
         loss_values = {}

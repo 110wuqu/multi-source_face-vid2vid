@@ -66,7 +66,7 @@ def train(config, generator, discriminator, kp_detector, he_estimator, checkpoin
                 # print(time() - start)
                 # start = time()
                 
-                losses_generator, generated = generator_full(x)
+                losses_generator, generated = generator_full(x, epoch/train_params['num_epochs'])
 
                 loss_values = [val.mean() for val in losses_generator.values()]
                 loss = sum(loss_values)

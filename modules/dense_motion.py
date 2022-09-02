@@ -37,7 +37,7 @@ class DenseMotionNetwork(nn.Module):
         self.is_train = train
 
 
-    def create_sparse_motions(self, feature, kp_driving, kp_source):
+    def create_sparse_motions(self, feature, kp_driving, kp_source, epoch_rate=None):
         if self.num_source == 1:
             bs, c, d, h, w = feature.shape
             identity_grid = make_coordinate_grid((d, h, w), type=kp_source['value'].type())
@@ -83,14 +83,22 @@ class DenseMotionNetwork(nn.Module):
                 driving_to_source.append(coordinate_grid + kp_source[i]['value'].view(bs, self.num_kp, 1, 1, 1, 3))
 
             if self.is_train:
-                selecting_keypoint = []
-                for i in range(self.num_source):
+                # zero masking for block gradient
+                if epoch_rate is None:
+                    selecting_keypoint = []
+                    for i in range(self.num_source):
+                        for j in range(self.num_kp):
+                            if rand_idx[j]==i:
+                                selecting_keypoint.append(driving_to_source[i][:,j].unsqueeze(1))
+                            else:
+                                selecting_keypoint.append(torch.zeros(driving_to_source[i][:,j].unsqueeze(1).shape, device='cuda'))
+                    driving_to_source = torch.cat(selecting_keypoint, dim=1)
+
+                # increase random bias rate
+                else:
                     for j in range(self.num_kp):
-                        if rand_idx[j]==i:
-                            selecting_keypoint.append(driving_to_source[i][:,j].unsqueeze(1))
-                        else:
-                            selecting_keypoint.append(torch.zeros(driving_to_source[i][:,j].unsqueeze(1).shape, device='cuda'))
-                driving_to_source = torch.cat(selecting_keypoint, dim=1)
+                        driving_to_source[rand_idx[j]][:,j] = driving_to_source[rand_idx[j]][:,j]*epoch_rate
+                    driving_to_source = torch.cat(selecting_keypoint, dim=1)
             else:
                 driving_to_source = torch.cat(driving_to_source, dim=1)
 
@@ -150,7 +158,7 @@ class DenseMotionNetwork(nn.Module):
         heatmap = heatmap.unsqueeze(2)         # (bs, num_kp+1, 1, d, h, w)
         return heatmap
 
-    def forward(self, feature, kp_driving, kp_source):
+    def forward(self, feature, kp_driving, kp_source, epoch_rate=None):
         bs, _, _, _, _ = feature.shape
         feature = self.compress(feature)
         feature = self.norm(feature)
@@ -162,7 +170,7 @@ class DenseMotionNetwork(nn.Module):
             bs, _, _, d, h, w = feature.shape
 
         out_dict = dict()
-        sparse_motion, rand_idx = self.create_sparse_motions(feature, kp_driving, kp_source) # (bs, num_kp+1, d, h, w, 3)
+        sparse_motion, rand_idx = self.create_sparse_motions(feature, kp_driving, kp_source, epoch_rate) # (bs, num_kp+1, d, h, w, 3)
         deformed_feature = self.create_deformed_feature(feature, sparse_motion, rand_idx) # (bs, num_kp+1, c, d, h, w)
 
         heatmap = self.create_heatmap_representations(deformed_feature, kp_driving, kp_source, rand_idx) # (bs, num_kp+1, 1, d, h, w)
