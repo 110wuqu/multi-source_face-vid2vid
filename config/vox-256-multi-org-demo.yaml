@@ -20,7 +20,7 @@ model_params:
     image_channel: 3                    
     feature_channel: 32
     num_source: 2
-    train: True
+    train: False
     estimate_jacobian: False
   kp_detector_params:
      temperature: 0.1

@@ -10,7 +10,7 @@ class OcclusionAwareGenerator(nn.Module):
     Generator follows NVIDIA architecture.
     """
 
-    def __init__(self, image_channel, feature_channel, num_kp, num_source, block_expansion, max_features, num_down_blocks, reshape_channel, reshape_depth, num_resblocks, estimate_occlusion_map=False, dense_motion_params=None, estimate_jacobian=False):
+    def __init__(self, image_channel, feature_channel, num_kp, num_source, block_expansion, max_features, num_down_blocks, reshape_channel, reshape_depth, num_resblocks, estimate_occlusion_map=False, dense_motion_params=None, estimate_jacobian=False, train=True):
         super(OcclusionAwareGenerator, self).__init__()
         
         self.num_source = num_source
@@ -69,7 +69,7 @@ class OcclusionAwareGenerator(nn.Module):
             deformation = deformation.permute(0, 2, 3, 4, 1)
         return F.grid_sample(inp, deformation)
 
-    def forward(self, source_image, kp_driving, kp_source):
+    def forward(self, source_image, kp_driving, kp_source, epoch_rate=None):
         # Encoding (downsampling) part
         if self.num_source != 1:
             bs_org, _, c, h, w = source_image.shape
@@ -89,7 +89,7 @@ class OcclusionAwareGenerator(nn.Module):
         output_dict = {}
         if self.dense_motion_network is not None:
             dense_motion = self.dense_motion_network(feature=feature_3d, kp_driving=kp_driving,
-                                                     kp_source=kp_source)
+                                                     kp_source=kp_source, epoch_rate=epoch_rate)
             output_dict['mask'] = dense_motion['mask']
 
             if 'occlusion_map' in dense_motion:
